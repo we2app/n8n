@@ -6,7 +6,7 @@ on:
     tags: ["v*.*.*"]
 
 env:
-  platforms: linux/amd64,linux/arm64/v8,linux/arm/v7,linux/s390x,linux/ppc64le,linux/riscv64
+  platforms: linux/amd64,linux/arm64/v8,linux/arm/v7
   imageName: we2app/base:latest
   repoName: ${{ github.event.repository.name }}
 
