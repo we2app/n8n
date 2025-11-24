@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 env:
-  PLATFORMS: linux/amd64,linux/arm64,linux/arm/v7
+  PLATFORMS: linux/amd64,linux/arm64
   REGISTRY: we2app
   IMAGE_NAME: ${{ github.event.repository.name }}
 
