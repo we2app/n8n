@@ -1,49 +1,154 @@
-name: Docker Image
+name: Build and Push n8n Docker Image
 
 on:
   push:
-    branches: main
-    tags: ["v*.*.*"]
+    branches: 
+      - main
+    tags: 
+      - "v*.*.*"
+  workflow_dispatch:
 
 env:
-  platforms: linux/amd64,linux/arm64/v8,linux/arm/v7
-  imageName: we2app/base:latest
-  repoName: ${{ github.event.repository.name }}
+  PLATFORMS: linux/amd64,linux/arm64,linux/arm/v7
+  REGISTRY: we2app
+  IMAGE_NAME: ${{ github.event.repository.name }}
 
 jobs:
-  login:
+  # Job 1: Prepare Metadata
+  prepare:
+    name: 📋 Prepare Build Metadata
     runs-on: ubuntu-latest
+    outputs:
+      repo_name: ${{ steps.meta.outputs.repo_name }}
+      build_date: ${{ steps.meta.outputs.build_date }}
+      git_sha: ${{ steps.meta.outputs.git_sha }}
+      version: ${{ steps.meta.outputs.version }}
+      
     steps:
-
-      - name: Check out the repo
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v3
-
-      - name: Set imageName based on the repository name
-        id: step_one
+      
+      - name: 📋 Extract Metadata
+        id: meta
         run: |
-          imageName="${{github.repository}}"
-          echo $imageName
-          echo "Repository name is ${GITHUB_REPOSITORY}"
-          echo "Name ${{ github.event.repository.name }}"
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+          echo "repo_name=${{ github.event.repository.name }}" >> $GITHUB_OUTPUT
+          echo "build_date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+          echo "git_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          
+      - name: 📄 Display Metadata
+        run: |
+          echo "Repository: ${{ steps.meta.outputs.repo_name }}"
+          echo "Build Date: ${{ steps.meta.outputs.build_date }}"
+          echo "Git SHA: ${{ steps.meta.outputs.git_sha }}"
+          echo "Version: ${{ steps.meta.outputs.version }}"
 
-      - name: Login to Docker Hub
+  # Job 2: Setup Build Environment
+  setup:
+    name: 🔧 Setup Build Environment
+    runs-on: ubuntu-latest
+    needs: prepare
+    
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v3
+        
+      - name: 🔧 Set up QEMU
+        uses: docker/setup-qemu-action@v2
+        
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        
+      - name: ℹ️ Display Docker Info
+        run: |
+          docker info
+          docker buildx version
+
+  # Job 3: Authenticate to Registry
+  authenticate:
+    name: 🔐 Authenticate to Docker Hub
+    runs-on: ubuntu-latest
+    needs: setup
+    
+    steps:
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          
+      - name: ✅ Authentication Successful
+        run: echo "Successfully authenticated to Docker Hub"
+
+  # Job 4: Build and Push Docker Image
+  build-and-push:
+    name: 🐳 Build and Push Multi-Platform Image
+    runs-on: ubuntu-latest
+    needs: [prepare, authenticate]
+    
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v3
+        
+      - name: 🔧 Set up QEMU
+        uses: docker/setup-qemu-action@v2
+        
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        
+      - name: 🔐 Login to Docker Hub
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       
-      - name: Build and push
+      - name: 🐳 Build and Push Docker Image
         id: docker_build
         uses: docker/build-push-action@v3
         with:
-          platforms: linux/amd64,linux/arm64,linux/arm
+          context: .
+          platforms: ${{ env.PLATFORMS }}
           push: true
           tags: |
-            we2app/${{ github.event.repository.name }}:latest
-            we2app/${{ github.event.repository.name }}:24.04
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:24.04
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.git_sha }}
+          labels: |
+            org.opencontainers.image.title=n8n Workflow Automation
+            org.opencontainers.image.description=n8n with Kokoro TTS support
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.created=${{ needs.prepare.outputs.build_date }}
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+      
+      - name: 📦 Image Digest
+        run: echo "Image digest - ${{ steps.docker_build.outputs.digest }}"
+
+  # Job 5: Verify Deployment
+  verify:
+    name: ✅ Verify Deployment
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    
+    steps:
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          
+      - name: 🔍 Pull and Verify Image
+        run: |
+          echo "Pulling image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          docker images | grep ${{ env.IMAGE_NAME }}
+          
+      - name: ✅ Deployment Successful
+        run: |
+          echo "✅ Docker image successfully built and pushed!"
+          echo "📦 Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          echo "🏷️ Tags: latest, 24.04, ${{ needs.prepare.outputs.git_sha }}"
 
           
